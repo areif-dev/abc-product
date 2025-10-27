@@ -4,6 +4,26 @@ use chrono::NaiveDate;
 use ean13::Ean13;
 use rust_decimal::Decimal;
 
+/// Attempt to convert a string into a [`Decimal`] by stripping out any characters that are not
+/// digits or the decimal point. Used primarily to parse pricing from the csv ABC database export
+///
+/// # Arguments
+/// * `price_str` - The string value to convert to a [`Decimal`]. This will primarily come from
+/// fields in the database export such as cost or list
+///
+/// # Returns
+/// A [`Decimal`] representing the number value passed in `price_str`
+///
+/// # Errors
+/// [`rust_decimal::Error`] if `price_str` cannot be parsed into a [`Decimal`]
+fn price_from_str(price_str: &str) -> Result<Decimal, rust_decimal::Error> {
+    let price_str: String = price_str
+        .chars()
+        .filter(|c| c.is_digit(10) || c == &'.')
+        .collect();
+    price_str.parse()
+}
+
 /// Represents a product or inventory item in ABC accounting software.
 ///
 /// # Example
@@ -38,6 +58,20 @@ pub struct AbcProduct {
     alt_skus: Vec<String>,
 }
 
+/// Used to safely construct an [`AbcProduct`]
+pub struct AbcProductBuilder {
+    sku: Option<String>,
+    desc: Option<String>,
+    upcs: Vec<Ean13>,
+    list: Option<Decimal>,
+    cost: Option<Decimal>,
+    stock: Option<f64>,
+    weight: Option<f64>,
+    group: Option<String>,
+    last_sold: Option<chrono::NaiveDate>,
+    alt_skus: Vec<String>,
+}
+
 /// A map where the key is a product's sku, and the value is the referenced [`AbcProduct`]
 pub type AbcProductsBySku = HashMap<String, AbcProduct>;
 
@@ -48,48 +82,33 @@ pub enum AbcParseError {
     /// A field required by [`AbcProduct`] is missing from the csv file. Value 0 is the name of the
     /// field that is missing. Value 1 is the row of the file that failed
     MissingField(String, usize),
+    /// Attempted to combine data from the `item.data` and `item_posted.data` file under one
+    /// [`AbcProduct`], but skus do not match
+    MisMatchedSkus,
     /// Covers any additional errors that arise while parsing. Value 0 should be used to provide
     /// context to the error such as the row that the error occurred on
     Custom(String),
 }
 
-impl std::fmt::Display for AbcParseError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::MissingField(field, row) => {
-                write!(f, "Missing field `{}` in row {}", field, row)
-            }
-            _ => write!(f, "{:?}", self),
-        }
-    }
+/// Just the fields that can be parsed from the `item_posted.data` file. Intended to be combined
+/// with [`IntermediateProduct`] to create a full [`AbcProduct`]
+struct IntermediatePostedProduct {
+    sku: String,
+    stock: f64,
+    last_sold: Option<chrono::NaiveDate>,
 }
 
-impl std::error::Error for AbcParseError {}
-
-impl From<csv::Error> for AbcParseError {
-    fn from(value: csv::Error) -> Self {
-        Self::CsvError(value)
-    }
-}
-
-/// Attempt to convert a string into a [`Decimal`] by stripping out any characters that are not
-/// digits or the decimal point. Used primarily to parse pricing from the csv ABC database export
-///
-/// # Arguments
-/// * `price_str` - The string value to convert to a [`Decimal`]. This will primarily come from
-/// fields in the database export such as cost or list
-///
-/// # Returns
-/// A [`Decimal`] representing the number value passed in `price_str`
-///
-/// # Errors
-/// [`rust_decimal::Error`] if `price_str` cannot be parsed into a [`Decimal`]
-fn price_from_str(price_str: &str) -> Result<Decimal, rust_decimal::Error> {
-    let price_str: String = price_str
-        .chars()
-        .filter(|c| c.is_digit(10) || c == &'.')
-        .collect();
-    price_str.parse()
+/// Just the fields that can be parsed from the `item.data` file. Intended to be combined with
+/// [`IntermediatePostedProduct`] to create a full [`AbcProduct`]
+struct IntermediateBaseProduct {
+    sku: String,
+    desc: String,
+    upcs: Vec<Ean13>,
+    list: Decimal,
+    cost: Decimal,
+    group: Option<String>,
+    weight: Option<f64>,
+    alt_skus: Vec<String>,
 }
 
 impl AbcProduct {
@@ -149,147 +168,6 @@ impl AbcProduct {
         self.alt_skus.to_owned()
     }
 
-    fn parse_item_posted_data(item_posted_path: &str) -> Result<AbcProductsBySku, AbcParseError> {
-        let mut posted_data = csv::ReaderBuilder::new()
-            .delimiter(b'\t')
-            .has_headers(false)
-            .from_path(item_posted_path)?;
-
-        let mut products = HashMap::new();
-        let mut i = 0;
-        while let Some(row) = posted_data.records().next() {
-            i += 1;
-            let row = row?;
-            let sku = row
-                .get(0)
-                .ok_or(AbcParseError::MissingField("sku".to_string(), i))?
-                .to_string();
-            let stock_str = row
-                .get(19)
-                .ok_or(AbcParseError::MissingField("stock".to_string(), i))?
-                .to_string();
-            let stock: f64 = stock_str.parse().or(Err(AbcParseError::Custom(format!(
-                "Cannot parse f64 from stock_str in row {} of posted items",
-                i
-            ))))?;
-            let last_sold_str: String = row
-                .get(1)
-                .ok_or(AbcParseError::MissingField("last_sold".to_string(), i))?
-                .to_string();
-            let last_sold = chrono::NaiveDate::parse_from_str(&last_sold_str, "%Y-%m-%d").ok();
-            let mut product = AbcProduct::new()
-                .with_sku(&sku)
-                .with_desc("")
-                .with_stock(stock)
-                .with_list(Decimal::new(0, 1))
-                .with_cost(Decimal::new(0, 1));
-            if let Some(l) = last_sold {
-                product = product.with_last_sold(l);
-            }
-            products.insert(sku, product.build()?);
-        }
-        Ok(products)
-    }
-
-    fn parse_item_data(item_path: &str) -> Result<AbcProductsBySku, AbcParseError> {
-        let mut item_data = csv::ReaderBuilder::new()
-            .delimiter(b'\t')
-            .has_headers(false)
-            .from_path(item_path)?;
-
-        let mut i = 0;
-        let mut products = HashMap::new();
-        while let Some(row) = item_data.records().next() {
-            i += 1;
-            let row = row?;
-            let sku = row
-                .get(0)
-                .ok_or(AbcParseError::MissingField("sku".to_string(), i))?
-                .to_string();
-            let desc = row
-                .get(1)
-                .ok_or(AbcParseError::MissingField("desc".to_string(), i))?
-                .to_string();
-            let upc_str: String = row
-                .get(43)
-                .ok_or(AbcParseError::MissingField("upcs".to_string(), i))?
-                .chars()
-                .filter(|c| c.is_digit(10) || *c == ',')
-                .collect();
-            let upcs: Vec<Ean13> = upc_str
-                .split(",")
-                .filter_map(|s| {
-                    if s.len() == 11 {
-                        // Some ABC UPCs leave out the check digit, so make one up and let [`Ean13::from_str_nonstrict`] fix it
-                        Ean13::from_str_nonstrict(&format!("{}0", s)).ok()
-                    } else if s.len() < 11 {
-                        // Anything less than 11 characters long is probably a dead upc
-                        None
-                    } else {
-                        // Anything 12 characters and up has a chance of being a good upc
-                        Ean13::from_str_nonstrict(s).ok()
-                    }
-                })
-                .collect();
-            let list = row
-                .get(6)
-                .ok_or(AbcParseError::MissingField("list".to_string(), i))?;
-            let list = price_from_str(list).or(Err(AbcParseError::Custom(format!(
-                "Cannot parse a price for list in row {}",
-                i
-            ))))?;
-            let cost = row
-                .get(8)
-                .ok_or(AbcParseError::MissingField("cost".to_string(), i))?;
-            let cost = price_from_str(cost).or(Err(AbcParseError::Custom(format!(
-                "Cannot parse a price for cost in row {}",
-                i
-            ))))?;
-            let weight_str = row
-                .get(45)
-                .ok_or(AbcParseError::MissingField("weight".to_string(), i))?;
-            let weight = match weight_str.parse::<f64>() {
-                Ok(f) => Some(f),
-                Err(_) => None,
-            };
-            let group = row.get(18);
-            let group = match group {
-                Some(g) => {
-                    if g.is_empty() {
-                        None
-                    } else {
-                        Some(g.to_owned())
-                    }
-                }
-                None => None,
-            };
-            let alt_skus = [row.get(40), row.get(41), row.get(42)]
-                .iter()
-                .filter_map(|o| match o {
-                    Some("") => None,
-                    Some(s) => Some(s.to_string()),
-                    None => None,
-                })
-                .collect();
-            products.insert(
-                sku.clone(),
-                AbcProduct {
-                    sku,
-                    desc,
-                    upcs,
-                    list,
-                    cost,
-                    weight,
-                    stock: 0.0,
-                    group,
-                    last_sold: None,
-                    alt_skus,
-                },
-            );
-        }
-        Ok(products)
-    }
-
     /// Create a map of skus to [`AbcProduct`]s by parsing ABC database export files.
     ///
     /// In order to run a database export, run report 7-10, select "I" (Inventory) as the file to export. All
@@ -315,8 +193,8 @@ impl AbcProduct {
         item_path: &str,
         item_posted_path: &str,
     ) -> Result<AbcProductsBySku, AbcParseError> {
-        let base_products = AbcProduct::parse_item_data(item_path)?;
-        let posted_products = AbcProduct::parse_item_posted_data(item_posted_path)?;
+        let base_products = IntermediateBaseProduct::parse_item_data(item_path)?;
+        let posted_products = IntermediatePostedProduct::parse_item_posted_data(item_posted_path)?;
         if base_products.len() != posted_products.len() {
             return Err(AbcParseError::Custom(
                 "The item_posted.data and item.data files have a different nember of items"
@@ -325,7 +203,7 @@ impl AbcProduct {
         }
 
         let mut products = AbcProductsBySku::new();
-        for (sku, mut base_product) in base_products {
+        for (sku, base_product) in base_products {
             let posted_product =
                 posted_products
                     .get(&sku)
@@ -333,42 +211,33 @@ impl AbcProduct {
                         "item_posted.data file has no product with sku '{}'",
                         sku
                     )))?;
-            base_product.last_sold = posted_product.last_sold;
-            base_product.stock = posted_product.stock;
-            products.insert(sku, base_product);
+            products.insert(sku, AbcProduct::try_from((&base_product, posted_product))?);
         }
         Ok(products)
     }
 }
 
-/// Used to safely construct an [`AbcProduct`]
-pub struct AbcProductBuilder {
-    sku: Option<String>,
-    desc: Option<String>,
-    upcs: Vec<Ean13>,
-    list: Option<Decimal>,
-    cost: Option<Decimal>,
-    stock: Option<f64>,
-    weight: Option<f64>,
-    group: Option<String>,
-    last_sold: Option<chrono::NaiveDate>,
-    alt_skus: Vec<String>,
-}
+impl TryFrom<(&IntermediateBaseProduct, &IntermediatePostedProduct)> for AbcProduct {
+    type Error = AbcParseError;
 
-impl From<AbcProduct> for AbcProductBuilder {
-    fn from(value: AbcProduct) -> Self {
-        AbcProductBuilder {
-            sku: Some(value.sku()),
-            desc: Some(value.desc()),
-            upcs: value.upcs(),
-            list: Some(value.list),
-            cost: Some(value.cost),
-            stock: Some(value.stock),
-            weight: value.weight,
-            group: value.group,
-            last_sold: value.last_sold,
-            alt_skus: value.alt_skus,
+    fn try_from(
+        (inter, posted): (&IntermediateBaseProduct, &IntermediatePostedProduct),
+    ) -> Result<Self, Self::Error> {
+        if inter.sku != posted.sku {
+            return Err(AbcParseError::MisMatchedSkus);
         }
+        Ok(AbcProduct {
+            sku: inter.sku.to_string(),
+            desc: inter.desc.to_string(),
+            alt_skus: inter.alt_skus.to_vec(),
+            upcs: inter.upcs.to_vec(),
+            cost: inter.cost,
+            list: inter.list,
+            group: inter.group.clone(),
+            weight: inter.weight,
+            stock: posted.stock,
+            last_sold: posted.last_sold,
+        })
     }
 }
 
@@ -532,6 +401,224 @@ impl AbcProductBuilder {
             last_sold: self.last_sold,
             alt_skus: self.alt_skus,
         })
+    }
+}
+
+impl From<AbcProduct> for AbcProductBuilder {
+    fn from(value: AbcProduct) -> Self {
+        AbcProductBuilder {
+            sku: Some(value.sku()),
+            desc: Some(value.desc()),
+            upcs: value.upcs(),
+            list: Some(value.list),
+            cost: Some(value.cost),
+            stock: Some(value.stock),
+            weight: value.weight,
+            group: value.group,
+            last_sold: value.last_sold,
+            alt_skus: value.alt_skus,
+        }
+    }
+}
+
+impl std::fmt::Display for AbcParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingField(field, row) => {
+                write!(f, "Missing field `{}` in row {}", field, row)
+            }
+            Self::MisMatchedSkus => {
+                write!(
+                    f,
+                    "Attempted to combine data from `item.data` and `item_posted.data` into a single [`AbcProduct`], but the skus do not match"
+                )
+            }
+            _ => write!(f, "{:?}", self),
+        }
+    }
+}
+
+impl std::error::Error for AbcParseError {}
+
+impl From<csv::Error> for AbcParseError {
+    fn from(value: csv::Error) -> Self {
+        Self::CsvError(value)
+    }
+}
+
+impl IntermediatePostedProduct {
+    /// Create an intermediate map of skus to [`AbcProduct`] by parsing just the `item_posted.data`
+    /// file
+    ///
+    /// # Arguments
+    /// * `item_posted_path` - The path to the `item_posted.data` file that contains posted data
+    /// fields for ABC inventory items
+    ///
+    /// # Returns
+    /// A map from skus to [`IntermediatePostedProduct`]. Each [`IntermediatePostedProduct`]
+    /// contains only the data for an [`AbcProduct`] that can be parsed from `item_posted.data`
+    ///
+    /// # Errors
+    /// Most errors will be related to parsing the csv file. There is also potential for
+    /// [`AbcParseError`]s to be raised if there are missing fields or other problems
+    /// deserializing the data
+    fn parse_item_posted_data(
+        item_posted_path: &str,
+    ) -> Result<HashMap<String, IntermediatePostedProduct>, AbcParseError> {
+        let mut posted_data = csv::ReaderBuilder::new()
+            .delimiter(b'\t')
+            .has_headers(false)
+            .from_path(item_posted_path)?;
+
+        let mut products = HashMap::new();
+        let mut i = 0;
+        while let Some(row) = posted_data.records().next() {
+            i += 1;
+            let row = row?;
+            let sku = row
+                .get(0)
+                .ok_or(AbcParseError::MissingField("sku".to_string(), i))?
+                .to_string();
+            let stock_str = row
+                .get(19)
+                .ok_or(AbcParseError::MissingField("stock".to_string(), i))?
+                .to_string();
+            let stock: f64 = stock_str.parse().or(Err(AbcParseError::Custom(format!(
+                "Cannot parse f64 from stock_str in row {} of posted items",
+                i
+            ))))?;
+            let last_sold_str: String = row
+                .get(1)
+                .ok_or(AbcParseError::MissingField("last_sold".to_string(), i))?
+                .to_string();
+            let last_sold = chrono::NaiveDate::parse_from_str(&last_sold_str, "%Y-%m-%d").ok();
+            products.insert(
+                sku.clone(),
+                IntermediatePostedProduct {
+                    sku,
+                    stock,
+                    last_sold,
+                },
+            );
+        }
+        Ok(products)
+    }
+}
+
+impl IntermediateBaseProduct {
+    /// Parses the `item.data` file to produce an intermediate mapping from skus to partial
+    /// [`AbcProduct`] data. A full [`AbcProduct`] can be derived by combining [`IntermediateBaseProduct`]s
+    /// with [`IntermediatePostedProduct`]s that share a sku.
+    ///
+    /// # Arguments
+    /// * `item_path` - The path to the ABC db export file usually called `item.data`. This file
+    /// contains most of the information for each inventory item
+    ///
+    /// # Returns
+    /// A map from skus to [`IntermediateBaseProduct`]. Each [`IntermediateBaseProduct`]
+    /// contains only the data for an [`AbcProduct`] that can be parsed from `item.data`
+    ///
+    /// # Errors
+    /// Most errors will be related to parsing the csv file. There is also potential for
+    /// [`AbcParseError`]s to be raised if there are missing fields or other problems
+    /// deserializing the data
+    fn parse_item_data(
+        item_path: &str,
+    ) -> Result<HashMap<String, IntermediateBaseProduct>, AbcParseError> {
+        let mut item_data = csv::ReaderBuilder::new()
+            .delimiter(b'\t')
+            .has_headers(false)
+            .from_path(item_path)?;
+
+        let mut i = 0;
+        let mut products = HashMap::new();
+        while let Some(row) = item_data.records().next() {
+            i += 1;
+            let row = row?;
+            let sku = row
+                .get(0)
+                .ok_or(AbcParseError::MissingField("sku".to_string(), i))?
+                .to_string();
+            let desc = row
+                .get(1)
+                .ok_or(AbcParseError::MissingField("desc".to_string(), i))?
+                .to_string();
+            let upc_str: String = row
+                .get(43)
+                .ok_or(AbcParseError::MissingField("upcs".to_string(), i))?
+                .chars()
+                .filter(|c| c.is_digit(10) || *c == ',')
+                .collect();
+            let upcs: Vec<Ean13> = upc_str
+                .split(",")
+                .filter_map(|s| {
+                    if s.len() == 11 {
+                        // Some ABC UPCs leave out the check digit, so make one up and let [`Ean13::from_str_nonstrict`] fix it
+                        Ean13::from_str_nonstrict(&format!("{}0", s)).ok()
+                    } else if s.len() < 11 {
+                        // Anything less than 11 characters long is probably a dead upc
+                        None
+                    } else {
+                        // Anything 12 characters and up has a chance of being a good upc
+                        Ean13::from_str_nonstrict(s).ok()
+                    }
+                })
+                .collect();
+            let list = row
+                .get(6)
+                .ok_or(AbcParseError::MissingField("list".to_string(), i))?;
+            let list = price_from_str(list).or(Err(AbcParseError::Custom(format!(
+                "Cannot parse a price for list in row {}",
+                i
+            ))))?;
+            let cost = row
+                .get(8)
+                .ok_or(AbcParseError::MissingField("cost".to_string(), i))?;
+            let cost = price_from_str(cost).or(Err(AbcParseError::Custom(format!(
+                "Cannot parse a price for cost in row {}",
+                i
+            ))))?;
+            let weight_str = row
+                .get(45)
+                .ok_or(AbcParseError::MissingField("weight".to_string(), i))?;
+            let weight = match weight_str.parse::<f64>() {
+                Ok(f) => Some(f),
+                Err(_) => None,
+            };
+            let group = row.get(18);
+            let group = match group {
+                Some(g) => {
+                    if g.is_empty() {
+                        None
+                    } else {
+                        Some(g.to_owned())
+                    }
+                }
+                None => None,
+            };
+            let alt_skus = [row.get(40), row.get(41), row.get(42)]
+                .iter()
+                .filter_map(|o| match o {
+                    Some("") => None,
+                    Some(s) => Some(s.to_string()),
+                    None => None,
+                })
+                .collect();
+            products.insert(
+                sku.clone(),
+                IntermediateBaseProduct {
+                    sku,
+                    desc,
+                    upcs,
+                    list,
+                    cost,
+                    weight,
+                    group,
+                    alt_skus,
+                },
+            );
+        }
+        Ok(products)
     }
 }
 
