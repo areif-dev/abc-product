@@ -1,7 +1,7 @@
 use std::{char, collections::HashMap};
 
 use chrono::NaiveDate;
-use ean13::Ean13;
+use gtin::Gtin;
 use rust_decimal::Decimal;
 
 /// Attempt to convert a string into a [`Decimal`] by stripping out any characters that are not
@@ -48,7 +48,7 @@ fn price_from_str(price_str: &str) -> Result<Decimal, rust_decimal::Error> {
 pub struct AbcProduct {
     sku: String,
     desc: String,
-    upcs: Vec<Ean13>,
+    upcs: Vec<Gtin>,
     list: Decimal,
     cost: Decimal,
     stock: f64,
@@ -62,7 +62,7 @@ pub struct AbcProduct {
 pub struct AbcProductBuilder {
     sku: Option<String>,
     desc: Option<String>,
-    upcs: Vec<Ean13>,
+    upcs: Vec<Gtin>,
     list: Option<Decimal>,
     cost: Option<Decimal>,
     stock: Option<f64>,
@@ -103,7 +103,7 @@ struct IntermediatePostedProduct {
 struct IntermediateBaseProduct {
     sku: String,
     desc: String,
-    upcs: Vec<Ean13>,
+    upcs: Vec<Gtin>,
     list: Decimal,
     cost: Decimal,
     group: Option<String>,
@@ -127,8 +127,8 @@ impl AbcProduct {
         self.desc.clone()
     }
 
-    /// Fetch the list of this product's [`Ean13`]s (UPCs)
-    pub fn upcs(&self) -> Vec<Ean13> {
+    /// Fetch the list of this product's [`Gtin`]s (UPCs)
+    pub fn upcs(&self) -> Vec<Gtin> {
         self.upcs.to_vec()
     }
 
@@ -275,12 +275,12 @@ impl AbcProductBuilder {
     }
 
     /// Set the value of the list of UPCs for this product
-    pub fn with_upcs(self, upcs: Vec<Ean13>) -> Self {
+    pub fn with_upcs(self, upcs: Vec<Gtin>) -> Self {
         AbcProductBuilder { upcs, ..self }
     }
 
     /// Add a UPC to the list of UPCs for this product
-    pub fn add_upc(self, upc: Ean13) -> Self {
+    pub fn add_upc(self, upc: Gtin) -> Self {
         let mut new_upcs = self.upcs.to_vec();
         new_upcs.push(upc);
         AbcProductBuilder {
@@ -549,18 +549,18 @@ impl IntermediateBaseProduct {
                 .chars()
                 .filter(|c| c.is_digit(10) || *c == ',')
                 .collect();
-            let upcs: Vec<Ean13> = upc_str
+            let upcs: Vec<Gtin> = upc_str
                 .split(",")
                 .filter_map(|s| {
                     if s.len() == 11 {
-                        // Some ABC UPCs leave out the check digit, so make one up and let [`Ean13::from_str_nonstrict`] fix it
-                        Ean13::from_str_nonstrict(&format!("{}0", s)).ok()
+                        // Some ABC UPCs leave out the check digit, so make one up and let [`Gtin::from_str_nonstrict`] fix it
+                        Some(Gtin::nonstrict_new(&format!("{}0", s)))
                     } else if s.len() < 11 {
                         // Anything less than 11 characters long is probably a dead upc
                         None
                     } else {
                         // Anything 12 characters and up has a chance of being a good upc
-                        Ean13::from_str_nonstrict(s).ok()
+                        Some(Gtin::nonstrict_new(s))
                     }
                 })
                 .collect();
@@ -641,7 +641,7 @@ mod tests {
                     AbcProduct::new()
                         .with_sku("123456")
                         .with_desc("PRODUCT A")
-                        .add_upc(Ean13::from_str_nonstrict("85875500014").unwrap())
+                        .add_upc(Gtin::nonstrict_new("85875500014"))
                         .with_cost(Decimal::new(123, 2))
                         .with_stock(0.00)
                         .with_list(Decimal::new(599, 2))
