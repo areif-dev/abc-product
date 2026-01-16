@@ -1,22 +1,22 @@
 use std::{char, collections::HashMap};
 
+use bigdecimal::BigDecimal;
 use chrono::NaiveDate;
 use gtin::Gtin;
-use rust_decimal::Decimal;
 
-/// Attempt to convert a string into a [`Decimal`] by stripping out any characters that are not
+/// Attempt to convert a string into a [`BigDecimal`] by stripping out any characters that are not
 /// digits or the decimal point. Used primarily to parse pricing from the csv ABC database export
 ///
 /// # Arguments
-/// * `price_str` - The string value to convert to a [`Decimal`]. This will primarily come from
+/// * `price_str` - The string value to convert to a [`BigDecimal`]. This will primarily come from
 /// fields in the database export such as cost or list
 ///
 /// # Returns
-/// A [`Decimal`] representing the number value passed in `price_str`
+/// A [`BigDecimal`] representing the number value passed in `price_str`
 ///
 /// # Errors
-/// [`rust_decimal::Error`] if `price_str` cannot be parsed into a [`Decimal`]
-fn price_from_str(price_str: &str) -> Result<Decimal, rust_decimal::Error> {
+/// [`bigdecimal::ParseBigDecimalError`] if `price_str` cannot be parsed into a [`BigDecimal`]
+fn price_from_str(price_str: &str) -> Result<BigDecimal, bigdecimal::ParseBigDecimalError> {
     let price_str: String = price_str
         .chars()
         .filter(|c| c.is_digit(10) || c == &'.')
@@ -29,14 +29,14 @@ fn price_from_str(price_str: &str) -> Result<Decimal, rust_decimal::Error> {
 /// # Example
 /// ```rust
 /// use abc_product::{AbcProduct, AbcProductsBySku, AbcParseError};
-/// use rust_decimal::Decimal;
+/// use bigdecimal::BigDecimal;
 ///
 /// // Manually creating an [`AbcProduct`]
 /// let p = AbcProduct::new()
 ///     .with_sku("abc-123")
 ///     .with_desc("Test product")
-///     .with_list(Decimal::new(199, 2))
-///     .with_cost(Decimal::new(99, 2))
+///     .with_list("1.99".parse().unwrap())
+///     .with_cost("0.99".parse().unwrap())
 ///     .with_stock(1.0)
 ///     .build()
 ///     .unwrap();
@@ -49,8 +49,8 @@ pub struct AbcProduct {
     sku: String,
     desc: String,
     upcs: Vec<Gtin>,
-    list: Decimal,
-    cost: Decimal,
+    list: BigDecimal,
+    cost: BigDecimal,
     stock: f64,
     group: Option<String>,
     weight: Option<f64>,
@@ -63,8 +63,8 @@ pub struct AbcProductBuilder {
     sku: Option<String>,
     desc: Option<String>,
     upcs: Vec<Gtin>,
-    list: Option<Decimal>,
-    cost: Option<Decimal>,
+    list: Option<BigDecimal>,
+    cost: Option<BigDecimal>,
     stock: Option<f64>,
     weight: Option<f64>,
     group: Option<String>,
@@ -104,8 +104,8 @@ struct IntermediateBaseProduct {
     sku: String,
     desc: String,
     upcs: Vec<Gtin>,
-    list: Decimal,
-    cost: Decimal,
+    list: BigDecimal,
+    cost: BigDecimal,
     group: Option<String>,
     weight: Option<f64>,
     alt_skus: Vec<String>,
@@ -132,14 +132,14 @@ impl AbcProduct {
         self.upcs.to_vec()
     }
 
-    /// Fetch this product's list price as a [`Decimal`]
-    pub fn list(&self) -> Decimal {
-        self.list
+    /// Fetch this product's list price as a [`BigDecimal`]
+    pub fn list(&self) -> BigDecimal {
+        self.list.clone()
     }
 
-    /// Fetch this product's cost as a [`Decimal`]
-    pub fn cost(&self) -> Decimal {
-        self.cost
+    /// Fetch this product's cost as a [`BigDecimal`]
+    pub fn cost(&self) -> BigDecimal {
+        self.cost.clone()
     }
 
     /// Fetch this product's current inventory level or stock
@@ -231,8 +231,8 @@ impl TryFrom<(&IntermediateBaseProduct, &IntermediatePostedProduct)> for AbcProd
             desc: inter.desc.to_string(),
             alt_skus: inter.alt_skus.to_vec(),
             upcs: inter.upcs.to_vec(),
-            cost: inter.cost,
-            list: inter.list,
+            cost: inter.cost.clone(),
+            list: inter.list.clone(),
             group: inter.group.clone(),
             weight: inter.weight,
             stock: posted.stock,
@@ -290,7 +290,7 @@ impl AbcProductBuilder {
     }
 
     /// Set this product's list price
-    pub fn with_list(self, list: Decimal) -> Self {
+    pub fn with_list(self, list: BigDecimal) -> Self {
         AbcProductBuilder {
             list: Some(list),
             ..self
@@ -298,7 +298,7 @@ impl AbcProductBuilder {
     }
 
     /// Set this product's cost
-    pub fn with_cost(self, cost: Decimal) -> Self {
+    pub fn with_cost(self, cost: BigDecimal) -> Self {
         AbcProductBuilder {
             cost: Some(cost),
             ..self
@@ -642,9 +642,9 @@ mod tests {
                         .with_sku("123456")
                         .with_desc("PRODUCT A")
                         .add_upc(Gtin::nonstrict_new("85875500014"))
-                        .with_cost(Decimal::new(123, 2))
+                        .with_cost("1.23".parse().unwrap())
                         .with_stock(0.00)
-                        .with_list(Decimal::new(599, 2))
+                        .with_list("5.99".parse().unwrap())
                         .with_last_sold(NaiveDate::from_str("2024-11-16").unwrap())
                         .add_alt_sku("ALT")
                         .build()
@@ -656,8 +656,8 @@ mod tests {
                         .with_sku("ABC123")
                         .with_desc("PRODUCT B")
                         .with_stock(-6.0)
-                        .with_list(Decimal::new(812, 2))
-                        .with_cost(Decimal::new(523, 2))
+                        .with_list("8.12".parse().unwrap())
+                        .with_cost("5.23".parse().unwrap())
                         .add_alt_sku("ALT SKU")
                         .with_group('A')
                         .unwrap()
