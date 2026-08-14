@@ -4,6 +4,126 @@ use bigdecimal::BigDecimal;
 use chrono::NaiveDate;
 use gtin::Gtin;
 
+/// The general ledger that a product belongs to
+#[derive(Debug, Clone, PartialEq)]
+pub enum SaleLedger {
+    Feed,
+    FarmSupplies,
+    CrashAccount,
+    UPSShipping,
+    DogLicense,
+    PetFood,
+    PetSupplies,
+    Bait,
+    FishingTackle,
+    FishingLicense,
+    HuntingLicense,
+    SnacksAndSodas,
+    HuntingSupplies,
+    PropaneAndGas,
+    ShoesAndClothing,
+    LawnAndGarden,
+    LawnAndGardenPowerEquipment,
+    Livestock,
+    LandscapeServices,
+    FencingMaterials,
+    Vaccines,
+    Parts,
+    AutomotiveHardware,
+    Hardware,
+    Plumbing,
+    Electrical,
+    Tools,
+    Paint,
+    Housewares,
+    BuildingProducts,
+    WeldingSupplies,
+    Fasteners,
+    OutdoorLivingAndAutomotive,
+    Gifts,
+    FloralArrangement,
+    GiftCertificates,
+    Services,
+    OtherInventory,
+    CommissionSales,
+    AccountsReceivableDiscounts,
+    MiscIncome,
+    NorthrupKingCommission,
+    InsuranceReimbursement,
+    Discounts,
+    ManufacturersCoupon,
+    Adjustments,
+    GrossIncome,
+}
+
+impl TryFrom<usize> for SaleLedger {
+    type Error = AbcParseError;
+    fn try_from(value: usize) -> Result<Self, Self::Error> {
+        match value {
+            501 => Ok(Self::Feed),
+            502 => Ok(Self::FarmSupplies),
+            505 => Ok(Self::CrashAccount),
+            506 => Ok(Self::UPSShipping),
+            509 => Ok(Self::DogLicense),
+            510 => Ok(Self::PetFood),
+            511 => Ok(Self::PetSupplies),
+            512 => Ok(Self::Bait),
+            513 => Ok(Self::FishingTackle),
+            514 => Ok(Self::FishingLicense),
+            515 => Ok(Self::HuntingLicense),
+            516 => Ok(Self::SnacksAndSodas),
+            517 => Ok(Self::HuntingSupplies),
+            518 => Ok(Self::PropaneAndGas),
+            519 => Ok(Self::ShoesAndClothing),
+            520 => Ok(Self::LawnAndGarden),
+            521 => Ok(Self::LawnAndGardenPowerEquipment),
+            522 => Ok(Self::Livestock),
+            523 => Ok(Self::LandscapeServices),
+            524 => Ok(Self::FencingMaterials),
+            525 => Ok(Self::Vaccines),
+            526 => Ok(Self::Parts),
+            529 => Ok(Self::AutomotiveHardware),
+            530 => Ok(Self::Hardware),
+            531 => Ok(Self::Plumbing),
+            532 => Ok(Self::Electrical),
+            533 => Ok(Self::Tools),
+            534 => Ok(Self::Paint),
+            535 => Ok(Self::Housewares),
+            536 => Ok(Self::BuildingProducts),
+            537 => Ok(Self::WeldingSupplies),
+            538 => Ok(Self::Fasteners),
+            539 => Ok(Self::OutdoorLivingAndAutomotive),
+            540 => Ok(Self::Gifts),
+            541 => Ok(Self::FloralArrangement),
+            542 => Ok(Self::GiftCertificates),
+            550 => Ok(Self::Services),
+            551 => Ok(Self::OtherInventory),
+            560 => Ok(Self::CommissionSales),
+            576 => Ok(Self::AccountsReceivableDiscounts),
+            577 => Ok(Self::MiscIncome),
+            585 => Ok(Self::NorthrupKingCommission),
+            586 => Ok(Self::InsuranceReimbursement),
+            596 => Ok(Self::Discounts),
+            597 => Ok(Self::ManufacturersCoupon),
+            598 => Ok(Self::Adjustments),
+            599 => Ok(Self::GrossIncome),
+            _ => Err(AbcParseError::Custom(format!(
+                "{value} does not map to a known ABC sales General Ledger"
+            ))),
+        }
+    }
+}
+
+impl TryFrom<&str> for SaleLedger {
+    type Error = AbcParseError;
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        let int_value: usize = value
+            .parse()
+            .map_err(|e| AbcParseError::Custom(format!("{:?}", e)))?;
+        SaleLedger::try_from(int_value)
+    }
+}
+
 /// Attempt to convert a string into a [`BigDecimal`] by stripping out any characters that are not
 /// digits or the decimal point. Used primarily to parse pricing from the csv ABC database export
 ///
@@ -28,7 +148,7 @@ fn price_from_str(price_str: &str) -> Result<BigDecimal, bigdecimal::ParseBigDec
 ///
 /// # Example
 /// ```rust
-/// use abc_product::{AbcProduct, AbcProductsBySku, AbcParseError};
+/// use abc_product::{AbcProduct, AbcProductsBySku, AbcParseError, SaleLedger};
 /// use bigdecimal::BigDecimal;
 ///
 /// // Manually creating an [`AbcProduct`]
@@ -38,6 +158,7 @@ fn price_from_str(price_str: &str) -> Result<BigDecimal, bigdecimal::ParseBigDec
 ///     .with_list("1.99".parse().unwrap())
 ///     .with_cost("0.99".parse().unwrap())
 ///     .with_stock(1.0)
+///     .with_sale_gl(SaleLedger::Paint)
 ///     .build()
 ///     .unwrap();
 ///
@@ -56,6 +177,7 @@ pub struct AbcProduct {
     weight: Option<f64>,
     last_sold: Option<chrono::NaiveDate>,
     alt_skus: Vec<String>,
+    sale_gl: SaleLedger,
 }
 
 /// Used to safely construct an [`AbcProduct`]
@@ -70,6 +192,7 @@ pub struct AbcProductBuilder {
     group: Option<String>,
     last_sold: Option<chrono::NaiveDate>,
     alt_skus: Vec<String>,
+    sale_gl: Option<SaleLedger>,
 }
 
 /// A map where the key is a product's sku, and the value is the referenced [`AbcProduct`]
@@ -109,6 +232,7 @@ struct IntermediateBaseProduct {
     group: Option<String>,
     weight: Option<f64>,
     alt_skus: Vec<String>,
+    sale_gl: SaleLedger,
 }
 
 impl AbcProduct {
@@ -166,6 +290,11 @@ impl AbcProduct {
     /// The list of alternative skus for this product
     pub fn alt_skus(&self) -> Vec<String> {
         self.alt_skus.to_owned()
+    }
+
+    /// The general ledger used to account for the sale
+    pub fn sale_gl(&self) -> SaleLedger {
+        self.sale_gl.clone()
     }
 
     /// Create a map of skus to [`AbcProduct`]s by parsing ABC database export files.
@@ -237,6 +366,7 @@ impl TryFrom<(&IntermediateBaseProduct, &IntermediatePostedProduct)> for AbcProd
             weight: inter.weight,
             stock: posted.stock,
             last_sold: posted.last_sold,
+            sale_gl: inter.sale_gl.clone(),
         })
     }
 }
@@ -255,6 +385,7 @@ impl AbcProductBuilder {
             group: None,
             last_sold: None,
             alt_skus: Vec::new(),
+            sale_gl: None,
         }
     }
 
@@ -365,6 +496,15 @@ impl AbcProductBuilder {
         }
     }
 
+    /// Add a sale general ledger record to this builder
+    pub fn with_sale_gl(self, ledger: impl Into<SaleLedger>) -> Self {
+        let sale_gl: SaleLedger = ledger.into();
+        Self {
+            sale_gl: Some(sale_gl),
+            ..self
+        }
+    }
+
     /// Attempt to construct an [`AbcProduct`] from this builder
     ///
     /// # Returns
@@ -400,6 +540,9 @@ impl AbcProductBuilder {
             group: self.group,
             last_sold: self.last_sold,
             alt_skus: self.alt_skus,
+            sale_gl: self
+                .sale_gl
+                .ok_or(AbcParseError::MissingField("sale_gl".to_string(), 0))?,
         })
     }
 }
@@ -417,6 +560,7 @@ impl From<AbcProduct> for AbcProductBuilder {
             group: value.group,
             last_sold: value.last_sold,
             alt_skus: value.alt_skus,
+            sale_gl: Some(value.sale_gl),
         }
     }
 }
@@ -604,6 +748,10 @@ impl IntermediateBaseProduct {
                     None => None,
                 })
                 .collect();
+            let sale_gl: SaleLedger = row
+                .get(2)
+                .ok_or(AbcParseError::MissingField("sale_gl".to_string(), i))?
+                .try_into()?;
             products.insert(
                 sku.clone(),
                 IntermediateBaseProduct {
@@ -615,6 +763,7 @@ impl IntermediateBaseProduct {
                     weight,
                     group,
                     alt_skus,
+                    sale_gl,
                 },
             );
         }
