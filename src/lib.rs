@@ -796,6 +796,7 @@ mod tests {
                         .with_list("5.99".parse().unwrap())
                         .with_last_sold(NaiveDate::from_str("2024-11-16").unwrap())
                         .add_alt_sku("ALT")
+                        .with_sale_gl(SaleLedger::Paint)
                         .build()
                         .unwrap()
                 ),
@@ -811,6 +812,7 @@ mod tests {
                         .with_group('A')
                         .unwrap()
                         .with_last_sold("2019-05-28".parse().unwrap())
+                        .with_sale_gl(SaleLedger::LawnAndGarden)
                         .build()
                         .unwrap()
                 )
