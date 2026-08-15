@@ -148,11 +148,11 @@ fn price_from_str(price_str: &str) -> Result<BigDecimal, bigdecimal::ParseBigDec
 ///
 /// # Example
 /// ```rust
-/// use abc_product::{AbcProduct, AbcProductsBySku, AbcParseError, SaleLedger};
+/// use abc_product::{AbcProduct, AbcProductBuilder, AbcProductsBySku, AbcParseError, SaleLedger};
 /// use bigdecimal::BigDecimal;
 ///
 /// // Manually creating an [`AbcProduct`]
-/// let p = AbcProduct::new()
+/// let p = AbcProductBuilder::new()
 ///     .with_sku("abc-123")
 ///     .with_desc("Test product")
 ///     .with_list("1.99".parse().unwrap())
@@ -236,11 +236,6 @@ struct IntermediateBaseProduct {
 }
 
 impl AbcProduct {
-    /// Create a new instance of [`AbcProductBuilder`] with all values set to [`None`] by default
-    pub fn new() -> AbcProductBuilder {
-        AbcProductBuilder::new()
-    }
-
     /// Fetch this product's sku
     pub fn sku(&self) -> String {
         self.sku.clone()
